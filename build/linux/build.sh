@@ -25,7 +25,7 @@ echo "[1/3] ✅ Python3 $(python3 --version | cut -d' ' -f2)"
 # Install PyInstaller
 echo "[2/3] Installing PyInstaller..."
 pip3 install --quiet --upgrade pip
-pip3 install --quiet pyinstaller
+pip3 install --quiet pyinstaller ttkbootstrap
 echo "✅ PyInstaller ready"
 
 # Compile
