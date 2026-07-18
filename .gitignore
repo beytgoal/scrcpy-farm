@@ -2,8 +2,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
-dist/
-build/
+/dist/
 *.spec
 .DS_Store
 Thumbs.db
