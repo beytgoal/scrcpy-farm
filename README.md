@@ -171,10 +171,11 @@ Select devices → click "▶ Start Sel" or "▶ Start All"
 
 | Device Count | Bitrate | Max Size | FPS | Bandwidth Needed |
 |-------------|---------|----------|-----|-----------------|
-| 10 devices | 4M | 1024 | 15 | ~40 Mbps |
-| 20 devices | 2M | 800 | 10 | ~40 Mbps |
-| 50 devices | 1M | 720 | 10 | ~50 Mbps |
-| 100 devices | 512K | 480 | 5 | ~50 Mbps |
+| 10 devices | 8M | 1280 | 30 | ~240 Mbps |
+| 20 devices | 4M | 1024 | 30 | ~240 Mbps |
+| 50 devices | 2M | 800 | 30 | ~300 Mbps |
+| 100 devices | 1M | 720 | 15 | ~150 Mbps |
+| 100 devices (eco) | 512K | 480 | 10 | ~50 Mbps |
 
 Set these in **Settings → Mirror Settings**.
 
@@ -228,7 +229,7 @@ Settings are stored in `~/.scrcpy-farm.json` (cross-platform).
 | `grid_per_page` | `20` | Devices shown per grid page |
 | `default_bitrate` | `2M` | Video bitrate per device |
 | `default_max_size` | `800` | Max video size in pixels |
-| `default_max_fps` | `10` | Max frames per second |
+| `default_max_fps` | `30` | Max frames per second (1-240) |
 | `auto_scan` | `true` | Auto-scan subnet on startup |
 | `auto_reconnect` | `true` | Reconnect known devices |
 | `charge_mode` | `false` | Disable ADB charging (≤5 devices) |

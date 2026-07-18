@@ -72,7 +72,7 @@ DEFAULT = {
     "adb_path": str(DEFAULT_ADB),
     "default_bitrate": "2M",
     "default_max_size": 800,
-    "default_max_fps": 10,
+    "default_max_fps": 30,
     "default_screen_off": True,
     "default_power_on_close": True,
     "grid_per_page": 20,
@@ -570,7 +570,7 @@ class DeviceFarm:
 
         args.append(f'-m{self.settings.get("default_max_size", 800)}')
         args.append(f'--bit-rate={self.settings.get("default_bitrate", "2M")}')
-        args.append(f'--max-fps={self.settings.get("default_max_fps", 10)}')
+        args.append(f'--max-fps={self.settings.get("default_max_fps", 30)}')
 
         model = self.devices.get(serial, {}).get("model", serial)[:15]
         args.append(f"--window-title={model}")
@@ -1160,8 +1160,8 @@ class DeviceFarm:
         r += 1
 
         ttk.Label(w, text="Max FPS:").grid(row=r, column=0, sticky=tk.W)
-        fv = tk.IntVar(value=self.settings.get("default_max_fps", 10))
-        ttk.Spinbox(w, from_=1, to=60, textvariable=fv, width=10).grid(
+        fv = tk.IntVar(value=self.settings.get("default_max_fps", 30))
+        ttk.Spinbox(w, from_=1, to=240, textvariable=fv, width=10).grid(
             row=r, column=1, sticky=tk.W
         )
         r += 1
