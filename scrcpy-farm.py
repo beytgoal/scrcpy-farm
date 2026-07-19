@@ -347,6 +347,16 @@ class ScrcpyFarmApp:
                     "mirroring": serial in self.active_streams,
                 }
 
+        # Auto-mirror newly detected devices
+        for serial, dev in new_devices.items():
+            if serial not in self.active_streams and dev["online"]:
+                self.root.after(0, lambda s=serial: self.start_mirror(s))
+
+        # Auto-stop mirrors for disconnected devices
+        for serial in list(self.active_streams.keys()):
+            if serial not in new_devices:
+                self.root.after(0, lambda s=serial: self.stop_mirror(s))
+
         self.devices = new_devices
         self.root.after(0, self.refresh_ui)
 
@@ -394,6 +404,8 @@ class ScrcpyFarmApp:
 
         # Status indicator
         status_color = "green" if dev["online"] else "red"
+        if dev["mirroring"]:
+            status_color = "orange"
         status_dot = tk.Canvas(card, width=12, height=12, bg=status_color, highlightthickness=0)
         status_dot.pack(pady=(5, 0))
 
@@ -404,16 +416,13 @@ class ScrcpyFarmApp:
         # Serial
         ttk.Label(card, text=dev["serial"], font=("Segoe UI", 8)).pack()
 
-        # Buttons
-        btn_frame = ttk.Frame(card)
-        btn_frame.pack(pady=5)
+        # Mirroring status
+        if dev["mirroring"]:
+            ttk.Label(card, text="Mirroring", foreground="orange", font=("Segoe UI", 8)).pack()
 
+        # Sideload button only
         if dev["online"]:
-            if dev["mirroring"]:
-                ttk.Button(btn_frame, text="Stop", command=lambda s=dev["serial"]: self.stop_mirror(s)).pack(side="left", padx=2)
-            else:
-                ttk.Button(btn_frame, text="Mirror", command=lambda s=dev["serial"]: self.start_mirror(s)).pack(side="left", padx=2)
-                ttk.Button(btn_frame, text="Sideload", command=lambda s=dev["serial"]: self.sideload_apk(s)).pack(side="left", padx=2)
+            ttk.Button(card, text="Sideload", command=lambda s=dev["serial"]: self.sideload_apk(s)).pack(pady=5)
 
     def update_pagination(self):
         """Update pagination controls."""
