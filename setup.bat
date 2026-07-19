@@ -1,113 +1,77 @@
 @echo off
-title scrcpy Farm v5.0 Installer
+title scrcpy Farm v5.1 Installer
 color 0A
 
 echo.
 echo ==========================================
-echo     scrcpy Farm v5.0 - Auto Installer
+echo     scrcpy Farm v5.1 - Auto Installer
 echo ==========================================
 echo.
 
-:: STEP 1: Check if pip works
+:: STEP 1: Python
 echo [1/5] Checking Python...
 python --version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo     Python not found. Downloading Python 3.12...
-    goto :install_python
-)
+if %errorlevel% neq 0 goto :install_python
+python -c "import ensurepip" >nul 2>&1
+if %errorlevel% neq 0 goto :install_python
 python -m pip --version >nul 2>&1
-if %errorlevel% equ 0 (
-    echo     Python + pip OK.
-    goto :step2
-)
-echo     Python found but pip broken. Reinstalling Python...
-goto :install_python
+if %errorlevel% equ 0 goto :step2
 
 :install_python
-echo     Downloading Python 3.12.4 installer...
-curl -L -o "%TEMP%\python-installer.exe" "https://www.python.org/ftp/python/3.12.4/python-3.12.4-amd64.exe"
-if %errorlevel% neq 0 (
-    echo [ERROR] Download failed. Check internet.
+echo     Python not found or pip broken. Installing Python 3.12...
+curl -L -o "%TEMP%\python.exe" "https://www.python.org/ftp/python/3.12.4/python-3.12.4-amd64.exe"
+"%TEMP%\python.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_pip=1 Include_launcher=1
+timeout /t 30 /nobreak >nul
+del "%TEMP%\python.exe" 2>nul
+echo     Python 3.12 installed.
+
+:step2
+:: Use the correct Python
+set PYTHON=
+for /f "tokens=*" %%i in ('where python 2^>nul') do set PYTHON=%%i
+if "%PYTHON%"=="" set PYTHON=%LOCALAPPDATA%\Programs\Python\Python312\python.exe
+if not exist "%PYTHON%" (
+    echo [ERROR] Python not found after install. Install manually from python.org
     pause
     exit /b 1
 )
-echo     Installing Python 3.12 (silent, auto-add to PATH)...
-"%TEMP%\python-installer.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_pip=1 Include_launcher=1
-echo     Waiting for install to finish...
-timeout /t 30 /nobreak >nul
-del /Q "%TEMP%\python-installer.exe" 2>nul
-echo     Python installed.
-refreshenv >nul 2>&1
-set "PATH=%LOCALAPPDATA%\Programs\Python\Python312;%LOCALAPPDATA%\Programs\Python\Python312\Scripts;%PATH%"
-set "PYTHON=%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
-set "PYINSTALLER=%LOCALAPPDATA%\Programs\Python\Python312\Scripts\pyinstaller.exe"
-goto :step2
-
-:step2
-:: Find pyinstaller path
-set PYINSTALLER=
-python -c "import sys,os; print(os.path.join(os.path.dirname(sys.executable),'Scripts','pyinstaller.exe'))" > "%TEMP%\pyi_path.txt" 2>nul
-set /p PYINSTALLER=<"%TEMP%\pyi_path.txt"
-del /Q "%TEMP%\pyi_path.txt" 2>nul
-if "%PYINSTALLER%"=="" set PYINSTALLER=python -m PyInstaller
 
 echo [2/5] Installing packages...
-python -m pip install PyQt6 av pyinstaller --quiet --disable-pip-version-check
-if %errorlevel% neq 0 (
-    echo     Retrying with --user flag...
-    python -m pip install PyQt6 av pyinstaller --quiet --user --disable-pip-version-check
-)
+"%PYTHON%" -m pip install PyQt6 opencv-python pyinstaller --quiet --disable-pip-version-check
 echo     Done.
 
-:: Recalc pyinstaller path after install
-python -c "import sys,os; print(os.path.join(os.path.dirname(sys.executable),'Scripts','pyinstaller.exe'))" > "%TEMP%\pyi_path.txt" 2>nul
-set /p PYINSTALLER=<"%TEMP%\pyi_path.txt"
-del /Q "%TEMP%\pyi_path.txt" 2>nul
+:: Find pyinstaller
+for /f "tokens=*" %%i in ('"%PYTHON%" -c "import sys,os; p=os.path.dirname(sys.executable); print(os.path.join(p,'Scripts','pyinstaller.exe'))"') do set PI=%%i
 
 echo [3/5] Checking scrcpy...
 set SCRCPY_DIR=C:\scrcpy
-if exist "%SCRCPY_DIR%\scrcpy.exe" (
-    echo     scrcpy already installed.
-    goto :step4
-)
-echo     Downloading scrcpy v4.1...
-mkdir "%SCRCPY_DIR%" 2>nul
-curl -L -o "%TEMP%\scrcpy.zip" "https://github.com/Genymobile/scrcpy/releases/download/v4.1/scrcpy-win64-v4.1.zip"
-if %errorlevel% neq 0 (
-    echo [ERROR] Download failed.
-    pause
-    exit /b 1
-)
-echo     Extracting...
-powershell -Command "Expand-Archive -Path '%TEMP%\scrcpy.zip' -DestinationPath '%TEMP%\scrcpy_extract' -Force"
-xcopy /E /Y /Q "%TEMP%\scrcpy_extract\scrcpy-win64-v4.1\*" "%SCRCPY_DIR%\" >nul 2>&1
-del /Q "%TEMP%\scrcpy.zip" 2>nul
-rmdir /S /Q "%TEMP%\scrcpy_extract" 2>nul
-echo     Done.
+if not exist "%SCRCPY_DIR%\scrcpy.exe" (
+    echo     Downloading scrcpy v4.1...
+    mkdir "%SCRCPY_DIR%" 2>nul
+    curl -L -o "%TEMP%\scrcpy.zip" "https://github.com/Genymobile/scrcpy/releases/download/v4.1/scrcpy-win64-v4.1.zip"
+    powershell -Command "Expand-Archive -Path '%TEMP%\scrcpy.zip' -DestinationPath '%TEMP%\scrcpy_extract' -Force"
+    xcopy /E /Y /Q "%TEMP%\scrcpy_extract\scrcpy-win64-v4.1\*" "%SCRCPY_DIR%\" >nul 2>&1
+    del /Q "%TEMP%\scrcpy.zip" 2>nul
+    rmdir /S /Q "%TEMP%\scrcpy_extract" 2>nul
+    echo     Done.
+) else echo     Already installed.
 
-:step4
 echo [4/5] Building scrcpy-farm.exe...
 echo     This may take 2-5 minutes...
-if exist "%PYINSTALLER%" (
-    "%PYINSTALLER%" --onefile --noconsole --name "scrcpy-farm" scrcpy-farm.py --distpath Desktop --clean --noconfirm
-) else (
-    python -m PyInstaller --onefile --noconsole --name "scrcpy-farm" scrcpy-farm.py --distpath Desktop --clean --noconfirm
-)
+if exist "%PI%" (
+    "%PI%" --onefile --noconsole --name "scrcpy-farm" scrcpy-farm.py --distpath Desktop --clean --noconfirm
+) else "%PYTHON%" -m PyInstaller --onefile --noconsole --name "scrcpy-farm" scrcpy-farm.py --distpath Desktop --clean --noconfirm
 if %errorlevel% neq 0 (
     echo [ERROR] Build failed.
     pause
     exit /b 1
 )
 
-:step5
-echo [5/5] Verifying...
 if exist "Desktop\scrcpy-farm.exe" (
     echo.
     echo ==========================================
-    echo     DONE! scrcpy-farm.exe is on your Desktop
+    echo     DONE! scrcpy-farm.exe on Desktop
     echo ==========================================
-) else (
-    echo [ERROR] scrcpy-farm.exe not found on Desktop.
 )
 
 pause
