@@ -467,7 +467,6 @@ class ScrcpyFarmApp:
 
         args = [scrcpy]
         args.append(f"--serial={serial}")
-        args.append(f"--adb={adb}")
         args.append(f"--bit-rate={self.settings.get('default_bitrate', '4M')}")
         args.append(f"--max-size={self.settings.get('default_max_size', 1024)}")
         args.append(f"--max-fps={self.settings.get('default_max_fps', 30)}")
