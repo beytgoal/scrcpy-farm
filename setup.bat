@@ -10,18 +10,18 @@ echo.
 
 where python >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [!] Python not found. Install from python.org
-    echo     Make sure "Add Python to PATH" is checked.
+    echo [ERROR] Python not found. Install from python.org with "Add to PATH" checked.
     pause
     exit /b 1
 )
 echo [1/4] Python found.
 
 echo [2/4] Installing Python packages...
-pip install PyQt6 av pyinstaller --quiet --disable-pip-version-check 2>nul
+pip install PyQt6 av pyinstaller --quiet --disable-pip-version-check
 if %errorlevel% neq 0 (
-    echo     Trying with py -m pip...
-    py -m pip install PyQt6 av pyinstaller --quiet --disable-pip-version-check 2>nul
+    echo [ERROR] pip install failed. Try: py -m pip install PyQt6 av pyinstaller
+    pause
+    exit /b 1
 )
 echo     Done.
 
@@ -32,7 +32,7 @@ if not exist "%SCRCPY_DIR%\scrcpy.exe" (
     mkdir "%SCRCPY_DIR%" 2>nul
     curl -L -o "%TEMP%\scrcpy.zip" "https://github.com/Genymobile/scrcpy/releases/download/v4.1/scrcpy-win64-v4.1.zip"
     if %errorlevel% neq 0 (
-        echo     Download failed. Check internet connection.
+        echo [ERROR] Download failed.
         pause
         exit /b 1
     )
@@ -47,10 +47,14 @@ if not exist "%SCRCPY_DIR%\scrcpy.exe" (
 )
 
 echo [4/4] Building scrcpy-farm.exe...
-pyinstaller --onefile --noconsole --name "scrcpy-farm" scrcpy-farm.py --distpath Desktop --clean --noconfirm 2>nul
+echo     This may take 2-5 minutes for first build...
+pyinstaller --onefile --noconsole --name "scrcpy-farm" scrcpy-farm.py --distpath Desktop --clean --noconfirm
 if %errorlevel% neq 0 (
-    echo     Build failed. Trying with py...
-    py -m PyInstaller --onefile --noconsole --name "scrcpy-farm" scrcpy-farm.py --distpath Desktop --clean --noconfirm 2>nul
+    echo.
+    echo [ERROR] Build failed. Check errors above.
+    echo     Common fix: py -m PyInstaller --onefile --noconsole --name "scrcpy-farm" scrcpy-farm.py --distpath Desktop --clean --noconfirm
+    pause
+    exit /b 1
 )
 
 if exist "Desktop\scrcpy-farm.exe" (
@@ -59,8 +63,7 @@ if exist "Desktop\scrcpy-farm.exe" (
     echo     DONE! scrcpy-farm.exe is on your Desktop
     echo ==========================================
 ) else (
-    echo.
-    echo     Build may have failed. Check Desktop for errors.
+    echo [ERROR] scrcpy-farm.exe not found on Desktop.
 )
 
 pause
