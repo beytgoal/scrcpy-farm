@@ -8,22 +8,36 @@ echo     scrcpy Farm v5.0 - Windows Installer
 echo ==========================================
 echo.
 
+:: Find python
 where python >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [ERROR] Python not found. Install from python.org with "Add to PATH" checked.
+    echo [ERROR] Python not found.
     pause
     exit /b 1
 )
 echo [1/4] Python found.
 
+:: Find python scripts dir for pyinstaller
+for /f "tokens=*" %%i in ('python -c "import sys; print(sys.executable)"') do set PYTHON_PATH=%%i
+for /f "tokens=*" %%i in ('python -c "import sys,os; print(os.path.dirname(sys.executable))"') do set PYTHON_DIR=%%i
+set SCRIPTS_DIR=%PYTHON_DIR%\Scripts
+
 echo [2/4] Installing Python packages...
-pip install PyQt6 av pyinstaller --quiet --disable-pip-version-check
+python -m pip install PyQt6 av pyinstaller --quiet --disable-pip-version-check
 if %errorlevel% neq 0 (
-    echo [ERROR] pip install failed. Try: py -m pip install PyQt6 av pyinstaller
+    echo [ERROR] pip install failed.
     pause
     exit /b 1
 )
 echo     Done.
+
+:: Find pyinstaller.exe
+set PYINSTALLER=
+if exist "%SCRIPTS_DIR%\pyinstaller.exe" (
+    set PYINSTALLER=%SCRIPTS_DIR%\pyinstaller.exe
+) else (
+    set PYINSTALLER=pyinstaller
+)
 
 echo [3/4] Checking scrcpy...
 set SCRCPY_DIR=C:\scrcpy
@@ -47,12 +61,12 @@ if not exist "%SCRCPY_DIR%\scrcpy.exe" (
 )
 
 echo [4/4] Building scrcpy-farm.exe...
-echo     This may take 2-5 minutes for first build...
-pyinstaller --onefile --noconsole --name "scrcpy-farm" scrcpy-farm.py --distpath Desktop --clean --noconfirm
+echo     Using: %PYINSTALLER%
+echo     This may take 2-5 minutes...
+"%PYINSTALLER%" --onefile --noconsole --name "scrcpy-farm" scrcpy-farm.py --distpath Desktop --clean --noconfirm
 if %errorlevel% neq 0 (
     echo.
     echo [ERROR] Build failed. Check errors above.
-    echo     Common fix: py -m PyInstaller --onefile --noconsole --name "scrcpy-farm" scrcpy-farm.py --distpath Desktop --clean --noconfirm
     pause
     exit /b 1
 )
