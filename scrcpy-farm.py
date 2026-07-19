@@ -218,8 +218,7 @@ class ScrcpyFarmApp:
     def apply_theme(self, theme_name):
         """Apply ttkbootstrap theme."""
         if HAS_TTKBOOTSTRAP:
-            style = ttkb.Style(theme=theme_name)
-            self.root.style = style
+            ttkb.Style(theme=theme_name)
             self.current_theme = theme_name
             self.settings["theme"] = theme_name
             save_settings(self.settings)
