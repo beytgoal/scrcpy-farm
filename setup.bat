@@ -8,22 +8,51 @@ echo     scrcpy Farm v5.0 - Windows Installer
 echo ==========================================
 echo.
 
-:: Find python
+:: Find real system Python (not venv)
+set PYTHON=
 where python >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [ERROR] Python not found.
+if %errorlevel% equ 0 (
+    for /f "tokens=*" %%i in ('python -c "import sys; p=sys.executable; print(p if not p.lower().endswith(('.exe',)) or 'venv' not in p.lower() else '')" 2^>nul') do set PYTHON=%%i
+)
+
+:: Fallback: try common Python locations
+if "%PYTHON%"=="" (
+    for %%p in (
+        "C:\Python312\python.exe"
+        "C:\Python311\python.exe"
+        "C:\Python310\python.exe"
+        "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+        "%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
+        "%LOCALAPPDATA%\Programs\Python\Python310\python.exe"
+    ) do (
+        if exist %%p (
+            set PYTHON=%%p
+            goto :found_python
+        )
+    )
+    echo [ERROR] No system Python found.
+    echo Install Python from python.org with "Add to PATH" checked.
     pause
     exit /b 1
 )
-echo [1/4] Python found.
 
-:: Find python scripts dir for pyinstaller
-for /f "tokens=*" %%i in ('python -c "import sys; print(sys.executable)"') do set PYTHON_PATH=%%i
-for /f "tokens=*" %%i in ('python -c "import sys,os; print(os.path.dirname(sys.executable))"') do set PYTHON_DIR=%%i
-set SCRIPTS_DIR=%PYTHON_DIR%\Scripts
+:found_python
+echo [1/4] Found Python: %PYTHON%
 
-echo [2/4] Installing Python packages...
-python -m pip install PyQt6 av pyinstaller --quiet --disable-pip-version-check
+:: Check if pip is available
+"%PYTHON%" -m pip --version >nul 2>&1
+if %errorlevel% neq 0 (
+    echo     pip not found. Installing pip...
+    "%PYTHON%" -m ensurepip --upgrade >nul 2>&1
+    if %errorlevel% neq 0 (
+        echo [ERROR] Cannot install pip. Install Python with pip included.
+        pause
+        exit /b 1
+    )
+)
+
+echo [2/4] Installing packages...
+"%PYTHON%" -m pip install PyQt6 av pyinstaller --quiet --disable-pip-version-check
 if %errorlevel% neq 0 (
     echo [ERROR] pip install failed.
     pause
@@ -31,13 +60,11 @@ if %errorlevel% neq 0 (
 )
 echo     Done.
 
-:: Find pyinstaller.exe
-set PYINSTALLER=
-if exist "%SCRIPTS_DIR%\pyinstaller.exe" (
-    set PYINSTALLER=%SCRIPTS_DIR%\pyinstaller.exe
-) else (
-    set PYINSTALLER=pyinstaller
-)
+:: Find pyinstaller
+set PYTHON_DIR=
+for /f "tokens=*" %%i in ('"%PYTHON%" -c "import sys,os; print(os.path.dirname(sys.executable))"') do set PYTHON_DIR=%%i
+set PYINSTALLER=%PYTHON_DIR%\Scripts\pyinstaller.exe
+if not exist "%PYINSTALLER%" set PYINSTALLER=%PYTHON_DIR%\pyinstaller.exe
 
 echo [3/4] Checking scrcpy...
 set SCRCPY_DIR=C:\scrcpy
@@ -66,7 +93,7 @@ echo     This may take 2-5 minutes...
 "%PYINSTALLER%" --onefile --noconsole --name "scrcpy-farm" scrcpy-farm.py --distpath Desktop --clean --noconfirm
 if %errorlevel% neq 0 (
     echo.
-    echo [ERROR] Build failed. Check errors above.
+    echo [ERROR] Build failed. See errors above.
     pause
     exit /b 1
 )
