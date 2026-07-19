@@ -465,16 +465,7 @@ class ScrcpyFarmApp:
             self.status_label.config(text=f"ERROR: adb not found at {adb}")
             return
 
-        args = [scrcpy]
-        args.append(f"--serial={serial}")
-        args.append(f"--bit-rate={self.settings.get('default_bitrate', '4M')}")
-        args.append(f"--max-size={self.settings.get('default_max_size', 1024)}")
-        args.append(f"--max-fps={self.settings.get('default_max_fps', 30)}")
-
-        if self.settings.get("default_screen_off", True):
-            args.append("--turn-screen-off")
-        if self.settings.get("default_power_on_close", True):
-            args.append("--power-off-on-close")
+        args = [scrcpy, f"--serial={serial}"]
 
         try:
             # scrcpy must run from its own directory (needs scrcpy-server)
