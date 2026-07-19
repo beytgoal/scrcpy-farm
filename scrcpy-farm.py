@@ -55,11 +55,18 @@ IS_MACOS   = platform.system() == "Darwin"
 IS_LINUX   = platform.system() == "Linux"
 
 if IS_WINDOWS:
+    APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+    EXE_SCRCPY = APP_DIR / "scrcpy.exe"
+    EXE_ADB = APP_DIR / "adb.exe"
     DEFAULT_SCRCPY = "C:\\scrcpy\\scrcpy.exe"
-    DEFAULT_ADB    = "C:\\scrcpy\\adb.exe"
-    SCRCPY_DIR     = Path("C:\\scrcpy")
-    PING_CMD       = ["ping", "-n", "1", "-w", "200"]
-    PING_TIMEOUT   = 2
+    DEFAULT_ADB = "C:\\scrcpy\\adb.exe"
+    if EXE_SCRCPY.exists():
+        DEFAULT_SCRCPY = str(EXE_SCRCPY)
+    if EXE_ADB.exists():
+        DEFAULT_ADB = str(EXE_ADB)
+    SCRCPY_DIR = Path("C:\\scrcpy")
+    PING_CMD = ["ping", "-n", "1", "-w", "200"]
+    PING_TIMEOUT = 2
 elif IS_MACOS:
     DEFAULT_SCRCPY = "/opt/homebrew/bin/scrcpy"
     DEFAULT_ADB    = "/opt/homebrew/bin/adb"

@@ -9,8 +9,7 @@ echo ==========================================
 echo.
 
 set SCRIPT_DIR=%~dp0
-set SCRPCY_DIR=%SCRIPT_DIR%bin
-set LOG=%TEMP%\scrcpy-farm.log
+set SCRPCY_DIR=C:\scrcpy
 
 echo [1/6] Checking Python...
 python --version 1>nul 2>nul
@@ -58,12 +57,12 @@ if not exist "%SCRPCY_DIR%\scrcpy.exe" (
         for /f "delims=" %%f in ('dir /b /s "%TEMP%\scrcpy-ext\*.dll" 2^>nul') do copy /y "%%f" "%SCRPCY_DIR%\" 1>nul
         del "%TEMP%\scrcpy.zip" 2>nul
         rmdir /s /q "%TEMP%\scrcpy-ext" 2>nul
-        echo       OK: scrcpy.exe
+        echo       OK
     ) else (
-        echo       Download failed. App will show error.
+        echo       Download failed
     )
 ) else (
-    echo       OK: scrcpy.exe exists
+    echo       Already exists
 )
 
 echo.
@@ -78,12 +77,12 @@ if not exist "%SCRPCY_DIR%\adb.exe" (
         copy /y "%TEMP%\adb-ext\platform-tools\AdbWinUsbApi.dll" "%SCRPCY_DIR%\" 1>nul
         del "%TEMP%\adb.zip" 2>nul
         rmdir /s /q "%TEMP%\adb-ext" 2>nul
-        echo       OK: adb.exe
+        echo       OK
     ) else (
-        echo       Download failed. App will show error.
+        echo       Download failed
     )
 ) else (
-    echo       OK: adb.exe exists
+    echo       Already exists
 )
 
 echo.
@@ -91,7 +90,7 @@ echo [5/6] Building scrcpy-farm.exe...
 cd /d "%SCRIPT_DIR%"
 python -m PyInstaller --onefile --noconsole --name "scrcpy-farm" --distpath "%SCRIPT_DIR%dist" --clean scrcpy-farm.py
 if not exist "%SCRIPT_DIR%dist\scrcpy-farm.exe" (
-    echo       BUILD FAILED. Check %LOG%
+    echo       BUILD FAILED
     pause
     exit /b 1
 )
@@ -99,7 +98,6 @@ if not exist "%SCRIPT_DIR%dist\scrcpy-farm.exe" (
 echo.
 echo [6/6] Done!
 copy /y "%SCRIPT_DIR%dist\scrcpy-farm.exe" "%USERPROFILE%\Desktop\scrcpy-farm.exe" 1>nul
-
 if exist "%SCRIPT_DIR%build" rmdir /s /q "%SCRIPT_DIR%build" 2>nul
 for %%f in ("%SCRIPT_DIR%*.spec") do del "%%f" 2>nul
 
@@ -108,7 +106,7 @@ echo ==========================================
 echo   ALL DONE!
 echo.
 echo   Desktop: scrcpy-farm.exe
-echo   bin:     scrcpy.exe + adb.exe
+echo   C:\scrcpy: scrcpy.exe + adb.exe
 echo ==========================================
 echo.
 pause
