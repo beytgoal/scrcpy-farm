@@ -103,70 +103,50 @@ DEFAULTS = {
 # =====================================================================
 # AUTO-DOWNLOAD SCRCPY + ADB
 # =====================================================================
+import threading as _threading
+
 class DependencyInstaller:
     """Auto-download and install scrcpy + ADB if missing."""
+
+    @staticmethod
+    def _fast_download(url, dest_path):
+        """Download without progress callback (faster)."""
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "scrcpy-farm/4.0"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                with open(dest_path, "wb") as f:
+                    f.write(r.read())
+            return True
+        except Exception as e:
+            print(f"Download failed {url}: {e}")
+            return False
 
     @staticmethod
     def get_latest_scrcpy_url():
         """Get latest scrcpy release URL from GitHub."""
         if IS_WINDOWS:
-            asset_pattern = re.compile(r"scrcpy-win.*\.zip", re.IGNORECASE)
+            pat = re.compile(r"scrcpy-win.*\.zip", re.IGNORECASE)
         elif IS_MACOS:
-            asset_pattern = re.compile(r"scrcpy-macos.*\.zip", re.IGNORECASE)
+            pat = re.compile(r"scrcpy-macos.*\.zip", re.IGNORECASE)
         else:
-            asset_pattern = re.compile(r"scrcpy-linux.*\.tar\.gz", re.IGNORECASE)
-
+            pat = re.compile(r"scrcpy-linux.*\.tar\.gz", re.IGNORECASE)
         try:
             req = urllib.request.Request(
                 "https://api.github.com/repos/Genymobile/scrcpy/releases/latest",
                 headers={"User-Agent": "scrcpy-farm/4.0"},
             )
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read())
-                for asset in data.get("assets", []):
-                    if asset_pattern.search(asset["name"]):
-                        return asset["browser_download_url"], asset["name"]
+                for a in data.get("assets", []):
+                    if pat.search(a["name"]):
+                        return a["browser_download_url"]
         except Exception as e:
-            print(f"Failed to get latest scrcpy: {e}")
-        return None, None
-
-    @staticmethod
-    def get_adb_url():
-        """Get ADB platform-tools download URL."""
-        if IS_WINDOWS:
-            return (
-                "https://dl.google.com/android/repository/platform-tools_latest_windows.zip",
-                "platform-tools",
-            )
-        elif IS_MACOS:
-            return (
-                "https://dl.google.com/android/repository/platform-tools-latest-darwin.zip",
-                "platform-tools",
-            )
-        else:
-            return (
-                "https://dl.google.com/android/repository/platform-tools-latest-linux.zip",
-                "platform-tools",
-            )
-
-    @staticmethod
-    def download_file(url, dest_path, progress_callback=None):
-        """Download a file with progress."""
-        try:
-            def _progress(block_num, block_size, total_size):
-                if progress_callback and total_size > 0:
-                    pct = min(block_num * block_size / total_size * 100, 100)
-                    progress_callback(pct)
-
-            urllib.request.urlretrieve(url, dest_path, _progress)
-            return True
-        except Exception as e:
-            print(f"Download failed: {e}")
-            return False
+            print(f"GitHub API failed: {e}")
+        return None
 
     @classmethod
     def install_all(cls, log_callback=None):
-        """Install scrcpy + ADB if missing. Returns dict of paths."""
+        """Install scrcpy + ADB in parallel."""
         def log(msg):
             if log_callback:
                 log_callback(msg)
@@ -175,88 +155,122 @@ class DependencyInstaller:
 
         installed = {"scrcpy": None, "adb": None}
 
-        # Create install directory
         if IS_WINDOWS:
             install_dir = Path("C:\\scrcpy")
         else:
             install_dir = Path.home() / ".scrcpy-farm"
         install_dir.mkdir(parents=True, exist_ok=True)
 
-        # Check scrcpy
+        # Check what we already have
         scrcpy_name = "scrcpy.exe" if IS_WINDOWS else "scrcpy"
         scrcpy_path = install_dir / scrcpy_name
-        if not scrcpy_path.exists():
-            log("📦 Downloading scrcpy...")
-            url, fname = cls.get_latest_scrcpy_url()
-            if url:
-                tmp = Path(tempfile.gettempdir()) / fname
-                if cls.download_file(url, str(tmp), lambda p: log(f"  scrcpy: {p:.0f}%")):
-                    log("  Extracting scrcpy...")
-                    if fname.endswith(".zip"):
-                        with zipfile.ZipFile(str(tmp)) as zf:
-                            # scrcpy zip contains a folder like scrcpy-win64/
-                            for member in zf.namelist():
-                                parts = member.split("/")
-                                if len(parts) > 1:
-                                    inner = "/".join(parts[1:])
-                                    if inner and not inner.endswith("/"):
-                                        target = install_dir / inner
-                                        target.parent.mkdir(parents=True, exist_ok=True)
-                                        with zf.open(member) as src, open(target, "wb") as dst:
-                                            dst.write(src.read())
-                        # Find scrcpy.exe in extracted files
-                        for f in install_dir.rglob(scrcpy_name):
-                            if not f == scrcpy_path:
-                                shutil.move(str(f), str(scrcpy_path))
-                    tmp.unlink(missing_ok=True)
-                    installed["scrcpy"] = str(scrcpy_path)
-                    log(f"  ✅ scrcpy installed: {scrcpy_path}")
-                else:
-                    log("  ❌ scrcpy download failed")
-            else:
-                log("  ❌ Could not find scrcpy release")
-        else:
-            installed["scrcpy"] = str(scrcpy_path)
-            log(f"  ✅ scrcpy found: {scrcpy_path}")
-
-        # Check ADB
         adb_name = "adb.exe" if IS_WINDOWS else "adb"
         adb_path = install_dir / adb_name
-        if not adb_path.exists():
-            log("📦 Downloading ADB (platform-tools)...")
-            url, folder = cls.get_adb_url()
-            if url:
-                tmp = Path(tempfile.gettempdir()) / "platform-tools.zip"
-                if cls.download_file(url, str(tmp), lambda p: log(f"  ADB: {p:.0f}%")):
-                    log("  Extracting ADB...")
-                    with zipfile.ZipFile(str(tmp)) as zf:
-                        for member in zf.namelist():
-                            parts = member.split("/")
-                            if len(parts) > 1:
-                                inner = "/".join(parts[1:])
-                                if inner and not inner.endswith("/"):
-                                    target = install_dir / inner
-                                    target.parent.mkdir(parents=True, exist_ok=True)
-                                    with zf.open(member) as src, open(target, "wb") as dst:
-                                        dst.write(src.read())
-                    tmp.unlink(missing_ok=True)
-                    # Verify
-                    if adb_path.exists():
-                        installed["adb"] = str(adb_path)
-                        log(f"  ✅ ADB installed: {adb_path}")
-                    else:
-                        # Search for it
-                        for f in install_dir.rglob(adb_name):
-                            installed["adb"] = str(f)
-                            log(f"  ✅ ADB found: {f}")
-                            break
-                else:
-                    log("  ❌ ADB download failed")
-            else:
-                log("  ❌ Could not get ADB URL")
+
+        already_have = []
+        need = []
+        if scrcpy_path.exists():
+            already_have.append("scrcpy")
+            installed["scrcpy"] = str(scrcpy_path)
         else:
+            need.append("scrcpy")
+        if adb_path.exists():
+            already_have.append("adb")
             installed["adb"] = str(adb_path)
-            log(f"  ✅ ADB found: {adb_path}")
+        else:
+            need.append("adb")
+
+        if already_have:
+            log(f"  Already have: {', '.join(already_have)}")
+        if not need:
+            log("  All dependencies ready!")
+            return installed
+
+        log(f"  Need to download: {', '.join(need)}")
+
+        # Download in parallel
+        def download_scrcpy():
+            nonlocal installed
+            log("  Downloading scrcpy...")
+            url = cls.get_latest_scrcpy_url()
+            if not url:
+                log("  Could not find scrcpy release")
+                return
+            tmp = Path(tempfile.gettempdir()) / "scrcpy.zip"
+            if not cls._fast_download(url, str(tmp)):
+                log("  scrcpy download failed")
+                return
+            log("  Extracting scrcpy...")
+            with zipfile.ZipFile(str(tmp)) as zf:
+                for m in zf.namelist():
+                    parts = m.split("/")
+                    if len(parts) > 1:
+                        inner = "/".join(parts[1:])
+                        if inner and not inner.endswith("/"):
+                            tgt = install_dir / inner
+                            tgt.parent.mkdir(parents=True, exist_ok=True)
+                            with zf.open(m) as s, open(tgt, "wb") as d:
+                                d.write(s.read())
+            tmp.unlink(missing_ok=True)
+            for f in install_dir.rglob(scrcpy_name):
+                if f != scrcpy_path:
+                    shutil.move(str(f), str(scrcpy_path))
+                    break
+            if scrcpy_path.exists():
+                installed["scrcpy"] = str(scrcpy_path)
+                log("  scrcpy OK")
+            else:
+                log("  scrcpy install failed")
+
+        def download_adb():
+            nonlocal installed
+            log("  Downloading ADB...")
+            urls = {
+                "Windows": "https://dl.google.com/android/repository/platform-tools_latest_windows.zip",
+                "Darwin": "https://dl.google.com/android/repository/platform-tools-latest-darwin.zip",
+                "Linux": "https://dl.google.com/android/repository/platform-tools-latest-linux.zip",
+            }
+            url = urls.get(platform.system())
+            if not url:
+                log("  Unknown platform for ADB")
+                return
+            tmp = Path(tempfile.gettempdir()) / "platform-tools.zip"
+            if not cls._fast_download(url, str(tmp)):
+                log("  ADB download failed")
+                return
+            log("  Extracting ADB...")
+            with zipfile.ZipFile(str(tmp)) as zf:
+                for m in zf.namelist():
+                    parts = m.split("/")
+                    if len(parts) > 1:
+                        inner = "/".join(parts[1:])
+                        if inner and not inner.endswith("/"):
+                            tgt = install_dir / inner
+                            tgt.parent.mkdir(parents=True, exist_ok=True)
+                            with zf.open(m) as s, open(tgt, "wb") as d:
+                                d.write(s.read())
+            tmp.unlink(missing_ok=True)
+            if adb_path.exists():
+                installed["adb"] = str(adb_path)
+                log("  ADB OK")
+            else:
+                for f in install_dir.rglob(adb_name):
+                    installed["adb"] = str(f)
+                    log("  ADB OK")
+                    break
+
+        # Run downloads in parallel
+        threads = []
+        if "scrcpy" in need:
+            t = _threading.Thread(target=download_scrcpy, daemon=True)
+            threads.append(t)
+            t.start()
+        if "adb" in need:
+            t = _threading.Thread(target=download_adb, daemon=True)
+            threads.append(t)
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
 
         return installed
 
@@ -374,45 +388,22 @@ class ScrcpyFarmApp:
 
     def _show_download_dialog(self):
         """Show download dialog and auto-install dependencies."""
-        dlg = tk.Toplevel(self.root) if HAS_TTKBOOTSTRAP else tk.Toplevel(self.root)
+        dlg = tk.Toplevel(self.root)
         dlg.title("Install Dependencies")
-        dlg.geometry("480x280")
+        dlg.geometry("440x220")
         dlg.resizable(False, False)
         dlg.transient(self.root)
         dlg.grab_set()
 
-        if HAS_TTKBOOTSTRAP:
-            ttkb.Label(
-                dlg, text="📦 Installing Dependencies",
-                font=("Segoe UI", 14, "bold"), bootstyle="primary"
-            ).pack(pady=(15, 5))
-
-            ttkb.Label(
-                dlg, text="scrcpy and/or ADB not found.\nAuto-downloading from official sources...",
-                bootstyle="info", wraplength=420, justify="center"
-            ).pack(pady=5)
-
-            log_frame = ttkb.Frame(dlg)
-            log_frame.pack(fill="both", expand=True, padx=20, pady=10)
-
-            log_text = tk.Text(log_frame, height=8, font=("Consolas", 9), bg="#0d1117", fg="#00ff41", bd=0)
-            log_text.pack(fill="both", expand=True)
-            log_text.configure(state="disabled")
-
-            status_var = tk.StringVar(value="Downloading...")
-            status_lbl = ttkb.Label(dlg, textvariable=status_var, bootstyle="warning")
-            status_lbl.pack(pady=(0, 10))
-        else:
-            tk.Label(dlg, text="Installing Dependencies", font=("Segoe UI", 14, "bold"), bg="#1a1a2e", fg="white").pack(pady=(15, 5))
-            tk.Label(dlg, text="scrcpy and/or ADB not found.\nAuto-downloading...", bg="#1a1a2e", fg="#ccc").pack(pady=5)
-            log_frame = tk.Frame(dlg)
-            log_frame.pack(fill="both", expand=True, padx=20, pady=10)
-            log_text = tk.Text(log_frame, height=8, font=("Consolas", 9), bg="#0d1117", fg="#00ff41", bd=0)
-            log_text.pack(fill="both", expand=True)
-            log_text.configure(state="disabled")
-            status_var = tk.StringVar(value="Downloading...")
-            status_lbl = tk.Label(dlg, textvariable=status_var, bg="#1a1a2e", fg="#ffc107")
-            status_lbl.pack(pady=(0, 10))
+        tk.Label(dlg, text="Installing Dependencies", font=("Segoe UI", 13, "bold"))
+        tk.Label(dlg, text="Downloading scrcpy + ADB (parallel)...", fg="#666", font=("Segoe UI", 9))
+        log_frame = tk.Frame(dlg)
+        log_frame.pack(fill="both", expand=True, padx=15, pady=5)
+        log_text = tk.Text(log_frame, height=7, font=("Consolas", 9), bg="#0d1117", fg="#00ff41", bd=0)
+        log_text.pack(fill="both", expand=True)
+        log_text.configure(state="disabled")
+        status_var = tk.StringVar(value="Downloading in parallel...")
+        tk.Label(dlg, textvariable=status_var, fg="#f39c12", font=("Segoe UI", 9))
 
         def log(msg):
             log_text.configure(state="normal")
@@ -427,8 +418,8 @@ class ScrcpyFarmApp:
             if result["adb"]:
                 self.settings["adb_path"] = result["adb"]
             save_settings(self.settings)
-            status_var.set("✅ Done!")
-            time.sleep(1)
+            status_var.set("Done! Starting app...")
+            time.sleep(0.5)
             dlg.destroy()
 
         threading.Thread(target=do_install, daemon=True).start()
