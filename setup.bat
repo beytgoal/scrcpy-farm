@@ -1,10 +1,10 @@
 @echo off
-title scrcpy Farm v5.1 Installer
+title scrcpy Farm v5.2 Installer
 color 0A
 
 echo.
 echo ==========================================
-echo     scrcpy Farm v5.1 - Auto Installer
+echo     scrcpy Farm v5.2 - Auto Installer
 echo ==========================================
 echo.
 
@@ -12,36 +12,32 @@ echo.
 echo [1/5] Checking Python...
 python --version >nul 2>&1
 if %errorlevel% neq 0 goto :install_python
-python -c "import ensurepip" >nul 2>&1
-if %errorlevel% neq 0 goto :install_python
 python -m pip --version >nul 2>&1
 if %errorlevel% equ 0 goto :step2
 
 :install_python
-echo     Python not found or pip broken. Installing Python 3.12...
+echo     Installing Python 3.12...
 curl -L -o "%TEMP%\python.exe" "https://www.python.org/ftp/python/3.12.4/python-3.12.4-amd64.exe"
 "%TEMP%\python.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_pip=1 Include_launcher=1
 timeout /t 30 /nobreak >nul
 del "%TEMP%\python.exe" 2>nul
-echo     Python 3.12 installed.
+echo     Done.
 
 :step2
-:: Use the correct Python
 set PYTHON=
-for /f "tokens=*" %%i in ('where python 2^>nul') do set PYTHON=%%i
-if "%PYTHON%"=="" set PYTHON=%LOCALAPPDATA%\Programs\Python\Python312\python.exe
-if not exist "%PYTHON%" (
-    echo [ERROR] Python not found after install. Install manually from python.org
-    pause
-    exit /b 1
+for /f "tokens=*" %%i in ('where python 2^>nul') do (
+    if not "%%i"=="%%i:AppData%%" set PYTHON=%%i
+    goto :found_py
 )
+:found_py
+if "%PYTHON%"=="" set PYTHON=python
 
 echo [2/5] Installing packages...
-"%PYTHON%" -m pip install PyQt6 opencv-python pyinstaller --quiet --disable-pip-version-check
+"%PYTHON%" -m pip install PyQt6 pywin32 pyinstaller --quiet --disable-pip-version-check
 echo     Done.
 
 :: Find pyinstaller
-for /f "tokens=*" %%i in ('"%PYTHON%" -c "import sys,os; p=os.path.dirname(sys.executable); print(os.path.join(p,'Scripts','pyinstaller.exe'))"') do set PI=%%i
+for /f "tokens=*" %%i in ('"%PYTHON%" -c "import sys,os; print(os.path.join(os.path.dirname(sys.executable),\"Scripts\",\"pyinstaller.exe\"))"') do set PI=%%i
 
 echo [3/5] Checking scrcpy...
 set SCRCPY_DIR=C:\scrcpy
@@ -60,7 +56,9 @@ echo [4/5] Building scrcpy-farm.exe...
 echo     This may take 2-5 minutes...
 if exist "%PI%" (
     "%PI%" --onefile --noconsole --name "scrcpy-farm" scrcpy-farm.py --distpath Desktop --clean --noconfirm
-) else "%PYTHON%" -m PyInstaller --onefile --noconsole --name "scrcpy-farm" scrcpy-farm.py --distpath Desktop --clean --noconfirm
+) else (
+    "%PYTHON%" -m PyInstaller --onefile --noconsole --name "scrcpy-farm" scrcpy-farm.py --distpath Desktop --clean --noconfirm
+)
 if %errorlevel% neq 0 (
     echo [ERROR] Build failed.
     pause
