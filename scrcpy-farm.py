@@ -448,7 +448,17 @@ class ScrcpyFarmApp:
         scrcpy = self.settings.get("scrcpy_path", DEFAULT_SCRCPY)
         adb = self.settings.get("adb_path", DEFAULT_ADB)
 
-        args = [scrcpy, f"--serial={serial}"]
+        # Validate paths
+        if not Path(scrcpy).exists():
+            self.status_label.config(text=f"ERROR: scrcpy not found at {scrcpy}")
+            return
+        if not Path(adb).exists():
+            self.status_label.config(text=f"ERROR: adb not found at {adb}")
+            return
+
+        args = [scrcpy]
+        args.append(f"--serial={serial}")
+        args.append(f"--adb={adb}")
         args.append(f"--bit-rate={self.settings.get('default_bitrate', '4M')}")
         args.append(f"--max-size={self.settings.get('default_max_size', 1024)}")
         args.append(f"--max-fps={self.settings.get('default_max_fps', 30)}")
@@ -458,25 +468,37 @@ class ScrcpyFarmApp:
         if self.settings.get("default_power_on_close", True):
             args.append("--power-off-on-close")
 
-        proc = subprocess.Popen(
-            args,
-            creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0,
-        )
-        self.active_streams[serial] = proc
-        self.devices[serial]["mirroring"] = True
-        self.refresh_ui()
-        self.status_label.config(text=f"Mirroring {serial}")
+        try:
+            # scrcpy must run from its own directory (needs scrcpy-server)
+            cwd = str(Path(scrcpy).parent)
+            proc = subprocess.Popen(
+                args,
+                cwd=cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0,
+            )
+            self.active_streams[serial] = proc
+            self.devices[serial]["mirroring"] = True
+            self.refresh_ui()
+            self.status_label.config(text=f"Mirroring {serial}")
 
-        # Watch for process exit
-        threading.Thread(target=self._watch_process, args=(serial, proc), daemon=True).start()
+            # Watch for process exit and capture errors
+            threading.Thread(target=self._watch_process, args=(serial, proc), daemon=True).start()
+
+        except Exception as e:
+            self.status_label.config(text=f"ERROR: {e}")
 
     def _watch_process(self, serial, proc):
         """Watch scrcpy process and clean up on exit."""
+        stderr_data = proc.stderr.read() if proc.stderr else ""
         proc.wait()
         if serial in self.active_streams:
             del self.active_streams[serial]
         if serial in self.devices:
             self.devices[serial]["mirroring"] = False
+        if proc.returncode != 0 and stderr_data:
+            self.root.after(0, lambda: self.status_label.config(text=f"scrcpy error: {stderr_data[:200]}"))
         self.root.after(0, self.refresh_ui)
 
     def stop_mirror(self, serial):
