@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Scrcpy Farm v5.0 — Embedded Multi-Session Display
-PyQt6 + scrcpy H.264 pipe → frames → QLabel grid
-No separate windows. All devices rendered inside one app.
+Uses scrcpy-server directly via ADB + TCP socket → PyAV decode → PyQt6 grid
+No scrcpy.exe window. All video rendered inside the app.
 """
 
 import sys
@@ -11,9 +11,10 @@ import json
 import subprocess
 import platform
 import threading
-import signal
+import socket
 import struct
 import time
+import io
 from pathlib import Path
 from collections import deque
 
@@ -25,10 +26,10 @@ try:
     from PyQt6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QGridLayout, QLabel, QPushButton, QFrame, QScrollArea, QFileDialog,
-        QStatusBar, QSplitter, QGroupBox
+        QStatusBar, QDialog, QFormLayout, QLineEdit, QDialogButtonBox
     )
-    from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QBuffer, QIODevice, QSize
-    from PyQt6.QtGui import QImage, QPixmap, QFont, QColor, QPalette, QIcon
+    from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize
+    from PyQt6.QtGui import QImage, QPixmap, QFont
 except ImportError:
     _missing.append("PyQt6")
 
@@ -38,27 +39,24 @@ except ImportError:
     _missing.append("av (PyAV)")
 
 if _missing:
-    print(f"ERROR: Missing packages: {', '.join(_missing)}")
+    print(f"ERROR: Missing: {', '.join(_missing)}")
     print("Run: pip install PyQt6 av")
     sys.exit(1)
 
 # =====================================================================
-# PLATFORM DETECTION
+# PLATFORM
 # =====================================================================
 IS_WINDOWS = platform.system() == "Windows"
-IS_MACOS   = platform.system() == "Darwin"
-IS_LINUX   = platform.system() == "Linux"
 
 if IS_WINDOWS:
     APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
     DEFAULT_SCRCPY = "C:\\scrcpy\\scrcpy.exe"
     DEFAULT_ADB = "C:\\scrcpy\\adb.exe"
-    # Also check same dir as exe/script
     if (APP_DIR / "scrcpy.exe").exists():
         DEFAULT_SCRCPY = str(APP_DIR / "scrcpy.exe")
     if (APP_DIR / "adb.exe").exists():
         DEFAULT_ADB = str(APP_DIR / "adb.exe")
-elif IS_MACOS:
+elif platform.system() == "Darwin":
     DEFAULT_SCRCPY = "/opt/homebrew/bin/scrcpy"
     DEFAULT_ADB = "/opt/homebrew/bin/adb"
     if not Path(DEFAULT_SCRCPY).exists():
@@ -70,10 +68,11 @@ else:
     DEFAULT_ADB = "/usr/bin/adb"
 
 SETTINGS_FILE = Path.home() / ".scrcpy-farm.json"
+SCRCPY_SERVER_JAR = "scrcpy-server-v4.1"  # filename inside release zip
 
-# =====================================================================
-# SETTINGS
-# =====================================================================
+# Base port for scrcpy-server TCP tunnels (each device gets its own port)
+BASE_PORT = 27183
+
 def load_settings():
     try:
         if SETTINGS_FILE.exists():
@@ -90,9 +89,6 @@ def save_settings(s):
     except Exception:
         pass
 
-# =====================================================================
-# HELPERS
-# =====================================================================
 def run_cmd(cmd, timeout=10):
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
@@ -110,143 +106,180 @@ def get_devices(adb):
             devices.append(parts[0])
     return devices
 
+# Find scrcpy-server jar in scrcpy install dir
+def find_scrcpy_server(scrcpy_path):
+    scrcpy_dir = Path(scrcpy_path).parent
+    # Look for scrcpy-server file (name varies by version)
+    for pattern in ["scrcpy-server*", "scrcpy-server"]:
+        matches = list(scrcpy_dir.glob(pattern))
+        for m in matches:
+            if m.is_file() and not m.suffix in ('.md', '.txt', '.log', '.bat', '.sh', '.py'):
+                return str(m)
+    return None
+
 # =====================================================================
-# SCRCPY VIDEO THREAD — pipes H.264 frames from scrcpy stdout
+# SCRCPY VIDEO THREAD — connects to scrcpy-server via ADB TCP tunnel
 # =====================================================================
 class ScrcpyVideoThread(QThread):
-    """Runs scrcpy with --output-format=h264 --output=- to capture raw video.
-    Decodes H.264 frames with PyAV and emits QPixmap signals."""
-    frame_ready = pyqtSignal(object, str)  # QPixmap, serial
-    error_occurred = pyqtSignal(str, str)   # error msg, serial
-    stopped = pyqtSignal(str)               # serial
+    """Push scrcpy-server to device, open ADB forward, connect TCP socket,
+    decode H.264 stream with PyAV, emit QPixmap frames."""
+    frame_ready = pyqtSignal(object, str)   # QPixmap, serial
+    error_occurred = pyqtSignal(str, str)   # error, serial
+    stopped = pyqtSignal(str)
 
-    def __init__(self, serial, scrcpy_path, adb_path, parent=None):
+    def __init__(self, serial, adb_path, port, server_jar=None, parent=None):
         super().__init__(parent)
         self.serial = serial
-        self.scrcpy_path = scrcpy_path
         self.adb_path = adb_path
+        self.port = port
+        self.server_jar = server_jar
         self._stop = False
+        self._server_proc = None
 
     def stop(self):
         self._stop = True
 
     def run(self):
-        scrcpy_dir = str(Path(self.scrcpy_path).parent)
-        cmd = [
-            self.scrcpy_path,
-            f"--serial={self.serial}",
-            "--no-window",  # scrcpy v3+ has this; v2.x does not
-            "--output-format=h264",
-            "--output=-",
-        ]
+        adb = self.adb_path
+        serial = self.serial
+        port = self.port
 
-        # If --no-window not supported, try without it
         try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=scrcpy_dir,
-                creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0,
-            )
-        except Exception as e:
-            # Fallback: try without --no-window
-            cmd_no_nw = [c for c in cmd if c != "--no-window"]
-            try:
-                proc = subprocess.Popen(
-                    cmd_no_nw,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    cwd=scrcpy_dir,
-                    creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0,
-                )
-            except Exception as e2:
-                self.error_occurred.emit(str(e2), self.serial)
+            # Step 1: Find scrcpy-server jar
+            if not self.server_jar:
+                self.error_occurred.emit("scrcpy-server not found in scrcpy directory", serial)
                 return
 
-        # Decode H.264 stream with PyAV
-        try:
-            container = av.open(
-                subprocess.Popen(
-                    ["cat"],  # dummy — we feed data manually
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                ).stdout,
-                format="h264",
+            # Step 2: Push scrcpy-server to device
+            remote_path = "/data/local/tmp/scrcpy-server.jar"
+            r = run_cmd([adb, "-s", serial, "push", self.server_jar, remote_path], timeout=15)
+            if "pushed" not in r.lower() and "error" in r.lower():
+                self.error_occurred.emit(f"Failed to push server: {r}", serial)
+                return
+
+            # Step 3: Set up ADB forward
+            forward_key = f"tcp:{port}"
+            run_cmd([adb, "-s", serial, "forward", forward_key, f"localabstract:scrcpy_{serial}"], timeout=5)
+
+            # Step 4: Start scrcpy-server on device
+            server_cmd = (
+                f"CLASSPATH={remote_path} "
+                f"app_process / com.genymobile.scrcpy.Server 4.1 "
+                f"tunnel_forward=true "
+                f"audio=false "
+                f"control=false "
+                f"cleanup=false "
+                f"raw_stream=true "
+                f"max_size=1024"
             )
-        except Exception:
-            pass
 
-        # Simpler approach: feed raw H.264 to av container
-        self._decode_stream(proc)
+            self._server_proc = subprocess.Popen(
+                [adb, "-s", serial, "shell", server_cmd],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0,
+            )
 
-        if proc.poll() is None:
-            proc.terminate()
-        self.stopped.emit(self.serial)
+            # Step 5: Wait for server to start
+            time.sleep(1.5)
 
-    def _decode_stream(self, proc):
-        """Read H.264 from proc.stdout and decode frames with PyAV."""
-        import io
+            if self._server_proc.poll() is not None:
+                stderr = self._server_proc.stderr.read().decode(errors="ignore")
+                self.error_occurred.emit(f"Server exited: {stderr[:100]}", serial)
+                return
 
-        # Create a pipe-based container for H.264 input
-        # We use a custom approach: read NAL units and decode
-        stream = proc.stdout
-        if not stream:
-            self.error_occurred.emit("No stdout from scrcpy", self.serial)
-            return
+            # Step 6: Connect TCP socket to get raw H.264
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            sock.connect(("127.0.0.1", port))
 
-        # Build a custom IO adapter for PyAV
+            # Step 7: Read device name header (1 byte size + name)
+            # When raw_stream=true, server sends device name first
+            try:
+                name_size = sock.recv(1)
+                if name_size:
+                    device_name = sock.recv(name_size[0])
+            except Exception:
+                pass  # raw_stream=true might skip header
+
+            sock.settimeout(0.5)
+
+            # Step 8: Decode H.264 stream
+            self._decode_h264_stream(sock)
+
+            sock.close()
+
+        except Exception as e:
+            self.error_occurred.emit(str(e)[:100], serial)
+
+        finally:
+            # Cleanup: remove ADB forward and kill server
+            run_cmd([adb, "-s", serial, "forward", f"--remove", f"tcp:{port}"], timeout=3)
+            if self._server_proc and self._server_proc.poll() is None:
+                self._server_proc.terminate()
+                try:
+                    self._server_proc.wait(timeout=3)
+                except Exception:
+                    self._server_proc.kill()
+
+            self.stopped.emit(self.serial)
+
+    def _decode_h264_stream(self, sock):
+        """Read raw H.264 from socket, decode frames with PyAV."""
+        # Create av container for H.264 demuxing
+        # We use a pipe-like approach: accumulate data, write to temp, decode
+
         buffer = bytearray()
         frame_count = 0
 
         while not self._stop:
-            chunk = stream.read(65536)
-            if not chunk:
+            try:
+                data = sock.recv(65536)
+                if not data:
+                    break
+                buffer.extend(data)
+            except socket.timeout:
+                continue
+            except Exception:
                 break
-            buffer.extend(chunk)
 
-            # Feed all available data to decoder
-            # Try to decode complete frames from the buffer
-            while len(buffer) > 0:
-                try:
-                    # Write buffer to a temporary pipe and decode
-                    import tempfile
-                    with tempfile.NamedTemporaryFile(suffix='.h264', delete=False) as tmp:
-                        tmp.write(bytes(buffer))
-                        tmp_path = tmp.name
-
-                    container = av.open(tmp_path, format="h264")
-                    for frame in container.decode(video=0):
-                        if self._stop:
-                            break
-                        # Convert frame to QImage
-                        img = frame.to_ndarray(format="rgb24")
-                        h, w, ch = img.shape
-                        bytes_per_line = ch * w
-                        qimg = QImage(img.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            # Try to decode what we have
+            if len(buffer) > 1024:  # At least 1KB before trying
+                frames = self._try_decode_buffer(bytes(buffer))
+                if frames:
+                    for frame_data in frames:
+                        qimg = QImage(
+                            frame_data, frame_data.shape[1], frame_data.shape[0],
+                            3 * frame_data.shape[1], QImage.Format.Format_RGB888
+                        )
                         pixmap = QPixmap.fromImage(qimg)
                         self.frame_ready.emit(pixmap, self.serial)
                         frame_count += 1
-
-                    container.close()
-                    os.unlink(tmp_path)
                     buffer.clear()
-                    break  # Got frames, wait for more data
-
-                except Exception:
-                    # Incomplete frame, wait for more data
-                    if len(buffer) > 10 * 1024 * 1024:  # 10MB safety
-                        buffer.clear()
-                    break
+                elif len(buffer) > 5 * 1024 * 1024:  # 5MB safety
+                    buffer.clear()
 
         if frame_count == 0:
             self.error_occurred.emit("No video frames decoded", self.serial)
+
+    def _try_decode_buffer(self, data):
+        """Try to decode H.264 data with PyAV, return list of numpy arrays."""
+        try:
+            # Write to a temporary pipe-like structure
+            container = av.open(io.BytesIO(data), format="h264")
+            frames = []
+            for frame in container.decode(video=0):
+                frames.append(frame.to_ndarray(format="rgb24"))
+            container.close()
+            return frames
+        except Exception:
+            return []
 
 # =====================================================================
 # DEVICE CARD WIDGET
 # =====================================================================
 class DeviceCard(QFrame):
-    """A card that displays one device's video feed inside the grid."""
+    """Displays one device's live video feed inside the grid."""
     def __init__(self, serial, parent=None):
         super().__init__(parent)
         self.serial = serial
@@ -257,9 +290,6 @@ class DeviceCard(QFrame):
                 border: 2px solid #16213e;
                 border-radius: 8px;
             }
-            DeviceCard:hover {
-                border-color: #0f3460;
-            }
         """)
         self.setFixedSize(260, 480)
 
@@ -267,7 +297,7 @@ class DeviceCard(QFrame):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(2)
 
-        # Header: model + status
+        # Header
         header = QHBoxLayout()
         self.status_dot = QLabel("●")
         self.status_dot.setStyleSheet("color: #2ecc71; font-size: 10px;")
@@ -283,27 +313,16 @@ class DeviceCard(QFrame):
         self.video_label = QLabel()
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_label.setMinimumSize(240, 400)
-        self.video_label.setStyleSheet("background-color: #0a0a15; border-radius: 4px;")
         self.video_label.setText("Connecting...")
         self.video_label.setFont(QFont("Segoe UI", 10))
-        self.video_label.setStyleSheet("""
-            background-color: #0a0a15;
-            border-radius: 4px;
-            color: #666;
-        """)
+        self.video_label.setStyleSheet("background-color: #0a0a15; border-radius: 4px; color: #666;")
         layout.addWidget(self.video_label, 1)
 
         # Sideload button
         self.sideload_btn = QPushButton("Sideload APK")
         self.sideload_btn.setFixedHeight(28)
         self.sideload_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #0f3460;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                font-size: 10px;
-            }
+            QPushButton { background-color: #0f3460; color: white; border: none; border-radius: 4px; font-size: 10px; }
             QPushButton:hover { background-color: #1a5276; }
         """)
         self.sideload_btn.clicked.connect(self._sideload)
@@ -312,7 +331,6 @@ class DeviceCard(QFrame):
         self.video_thread = None
 
     def update_frame(self, pixmap):
-        """Update the video display with a new frame."""
         if pixmap and not pixmap.isNull():
             scaled = pixmap.scaled(
                 self.video_label.size(),
@@ -332,11 +350,10 @@ class DeviceCard(QFrame):
             self.video_label.setText("Offline")
             self.video_label.setStyleSheet("background-color: #0a0a15; border-radius: 4px; color: #e74c3c;")
 
-    def start_stream(self, scrcpy_path, adb_path):
-        """Start the scrcpy video stream for this device."""
+    def start_stream(self, adb_path, port, server_jar=None):
         if self.video_thread and self.video_thread.isRunning():
             return
-        self.video_thread = ScrcpyVideoThread(self.serial, scrcpy_path, adb_path)
+        self.video_thread = ScrcpyVideoThread(self.serial, adb_path, port, server_jar)
         self.video_thread.frame_ready.connect(self.update_frame)
         self.video_thread.error_occurred.connect(self._on_error)
         self.video_thread.stopped.connect(self._on_stopped)
@@ -345,32 +362,30 @@ class DeviceCard(QFrame):
         self.video_label.setStyleSheet("background-color: #0a0a15; border-radius: 4px; color: #f39c12;")
 
     def stop_stream(self):
-        """Stop the scrcpy video stream."""
         if self.video_thread and self.video_thread.isRunning():
             self.video_thread.stop()
-            self.video_thread.wait(3000)
+            self.video_thread.wait(5000)
             self.video_thread = None
         self.video_label.setText("Stopped")
         self.video_label.setStyleSheet("background-color: #0a0a15; border-radius: 4px; color: #666;")
 
     def _on_error(self, msg, serial):
-        self.video_label.setText(f"Error: {msg[:50]}")
-        self.video_label.setStyleSheet("background-color: #0a0a15; border-radius: 4px; color: #e74c3c;")
+        self.video_label.setText(f"Error:\n{msg[:40]}")
+        self.video_label.setStyleSheet("background-color: #0a0a15; border-radius: 4px; color: #e74c3c; font-size: 9px;")
         self.status_dot.setStyleSheet("color: #e74c3c; font-size: 10px;")
 
     def _on_stopped(self, serial):
         self.status_dot.setStyleSheet("color: #e74c3c; font-size: 10px;")
 
     def _sideload(self):
-        from PyQt6.QtWidgets import QFileDialog
         path, _ = QFileDialog.getOpenFileName(self, "Select APK", "", "APK files (*.apk)")
         if path:
             adb = load_settings().get("adb_path", DEFAULT_ADB)
             r = run_cmd([adb, "-s", self.serial, "install", "-r", path], timeout=60)
             if "Success" in r:
-                self.model_label.setText(f"{self.serial[:15]} ✓")
+                self.model_label.setText(f"{self.serial[:12]} ✓")
             else:
-                self.model_label.setText(f"{self.serial[:15]} ✗")
+                self.model_label.setText(f"{self.serial[:12]} ✗")
 
     def closeEvent(self, event):
         self.stop_stream()
@@ -382,18 +397,20 @@ class DeviceCard(QFrame):
 class ScrcpyFarmWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Scrcpy Farm v5.0 — Embedded Display")
+        self.setWindowTitle("Scrcpy Farm v5.0")
         self.setMinimumSize(1200, 800)
         self.resize(1600, 900)
 
         self.settings = load_settings()
-        self.cards = {}         # serial -> DeviceCard
-        self.known_devices = set()
+        self.cards = {}
+        self.device_ports = {}   # serial -> port number
+        self.next_port = BASE_PORT
+        self.server_jar = find_scrcpy_server(self.settings.get("scrcpy_path", DEFAULT_SCRCPY))
 
         self._build_ui()
         self._apply_dark_theme()
 
-        # Poll timer for device detection
+        # Poll for devices
         self.poll_timer = QTimer(self)
         self.poll_timer.timeout.connect(self._poll_devices)
         self.poll_timer.start(3000)
@@ -412,7 +429,6 @@ class ScrcpyFarmWindow(QMainWindow):
         title.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
         title.setStyleSheet("color: white;")
         header.addWidget(title)
-
         header.addStretch()
 
         self.stat_label = QLabel("Devices: 0 | Mirroring: 0")
@@ -441,19 +457,19 @@ class ScrcpyFarmWindow(QMainWindow):
         status = QStatusBar()
         status.setStyleSheet("color: #888; font-size: 11px;")
         self.setStatusBar(status)
-        status.showMessage("Ready — waiting for devices")
+
+        if self.server_jar:
+            status.showMessage(f"Ready — server: {Path(self.server_jar).name}")
+        else:
+            status.showMessage("WARNING: scrcpy-server not found in scrcpy directory!")
 
     def _apply_dark_theme(self):
         self.setStyleSheet("""
             QMainWindow { background-color: #0d1117; }
             QWidget { background-color: #0d1117; color: white; }
             QPushButton {
-                background-color: #1f6feb;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 6px 16px;
-                font-size: 12px;
+                background-color: #1f6feb; color: white; border: none;
+                border-radius: 4px; padding: 6px 16px; font-size: 12px;
             }
             QPushButton:hover { background-color: #388bfd; }
             QStatusBar { background: #161b22; border-top: 1px solid #30363d; }
@@ -462,43 +478,42 @@ class ScrcpyFarmWindow(QMainWindow):
         """)
 
     def _poll_devices(self):
-        """Check for connected devices and auto-mirror."""
         adb = self.settings.get("adb_path", DEFAULT_ADB)
         devices = get_devices(adb)
 
-        # Remove cards for disconnected devices
+        # Remove disconnected
         for serial in list(self.cards.keys()):
             if serial not in devices:
                 card = self.cards.pop(serial)
+                port = self.device_ports.pop(serial, None)
                 self.grid_layout.removeWidget(card)
                 card.stop_stream()
                 card.deleteLater()
-                self.known_devices.discard(serial)
 
-        # Add cards for new devices
+        # Add new devices
         for serial in devices:
             if serial not in self.cards:
+                # Assign unique port
+                port = self.next_port
+                self.next_port += 1
+                self.device_ports[serial] = port
+
                 card = DeviceCard(serial)
                 self.cards[serial] = card
-                self.known_devices.add(serial)
 
-                # Try to get device model
+                # Get model
                 model = run_cmd([adb, "-s", serial, "shell", "getprop", "ro.product.model"])
                 if model:
                     card.set_model(model)
 
-                self._add_card_to_grid(card)
+                self._add_card(card)
 
                 # Auto-start mirror
-                card.start_stream(
-                    self.settings.get("scrcpy_path", DEFAULT_SCRCPY),
-                    adb,
-                )
+                card.start_stream(adb, port, self.server_jar)
 
         self._update_stats()
 
-    def _add_card_to_grid(self, card):
-        """Add a device card to the grid (5 columns)."""
+    def _add_card(self, card):
         count = self.grid_layout.count()
         cols = 5
         row = count // cols
@@ -510,22 +525,19 @@ class ScrcpyFarmWindow(QMainWindow):
         mirroring = sum(1 for c in self.cards.values()
                         if c.video_thread and c.video_thread.isRunning())
         self.stat_label.setText(f"Devices: {total} | Mirroring: {mirroring}")
-        self.statusBar().showMessage(
-            f"Connected: {total} device(s) | Mirroring: {mirroring}"
-        )
+        self.statusBar().showMessage(f"Connected: {total} | Mirroring: {mirroring}")
 
     def _open_settings(self):
-        """Simple settings dialog."""
-        from PyQt6.QtWidgets import QDialog, QFormLayout, QLineEdit, QDialogButtonBox
-
         dlg = QDialog(self)
         dlg.setWindowTitle("Settings")
         dlg.setMinimumWidth(400)
         dlg.setStyleSheet("""
             QDialog { background: #161b22; color: white; }
             QLabel { color: white; }
-            QLineEdit { background: #0d1117; color: white; border: 1px solid #30363d; border-radius: 4px; padding: 4px; }
-            QPushButton { background: #1f6feb; color: white; border: none; border-radius: 4px; padding: 6px 16px; }
+            QLineEdit { background: #0d1117; color: white; border: 1px solid #30363d;
+                         border-radius: 4px; padding: 4px; }
+            QPushButton { background: #1f6feb; color: white; border: none;
+                          border-radius: 4px; padding: 6px 16px; }
         """)
 
         form = QFormLayout(dlg)
@@ -534,17 +546,19 @@ class ScrcpyFarmWindow(QMainWindow):
         form.addRow("Scrcpy path:", scrcpy_edit)
         form.addRow("ADB path:", adb_edit)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(lambda: self._save_settings(scrcpy_edit.text(), adb_edit.text(), dlg))
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(lambda: self._save_and_close(scrcpy_edit.text(), adb_edit.text(), dlg))
         buttons.rejected.connect(dlg.reject)
         form.addRow(buttons)
-
         dlg.exec()
 
-    def _save_settings(self, scrcpy, adb, dlg):
+    def _save_and_close(self, scrcpy, adb, dlg):
         self.settings["scrcpy_path"] = scrcpy
         self.settings["adb_path"] = adb
         save_settings(self.settings)
+        self.server_jar = find_scrcpy_server(scrcpy)
         dlg.accept()
 
     def closeEvent(self, event):
@@ -559,10 +573,8 @@ class ScrcpyFarmWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setFont(QFont("Segoe UI", 10))
-
     window = ScrcpyFarmWindow()
     window.show()
-
     sys.exit(app.exec())
 
 if __name__ == "__main__":
